@@ -1,9 +1,46 @@
 from datetime import datetime
+from email.header import decode_header
+from email.utils import parseaddr
+import html
 
 from django.contrib import admin
 from django.db.models import Q
+from django.urls import reverse
+from django.utils.html import format_html
 
 from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
+
+
+def decode_mime_header(header_value):
+    """Decode MIME-encoded email headers to readable text"""
+    if not header_value:
+        return ""
+    
+    try:
+        # Parse the email address to separate name and email
+        name, email = parseaddr(str(header_value))
+        
+        if name:
+            # Decode the name part if it's MIME encoded
+            decoded_parts = decode_header(name)
+            decoded_name = ""
+            for part, encoding in decoded_parts:
+                if isinstance(part, bytes):
+                    decoded_name += part.decode(encoding or 'utf-8', errors='replace')
+                else:
+                    decoded_name += part
+            
+            # Return formatted as "Decoded Name <email@domain.com>"
+            if email:
+                return f"{decoded_name} <{email}>"
+            else:
+                return decoded_name
+        else:
+            # Just return the email if no name part
+            return email or str(header_value)
+    except Exception:
+        # Fallback to original string if decoding fails
+        return str(header_value)
 
 
 # Inline classes defined first
@@ -124,14 +161,13 @@ class RecipientFilter(admin.SimpleListFilter):
 class GoogleMailMessageAdmin(admin.ModelAdmin):
     list_display = (
         "formated_date",
-        "account_email",
         "header_from",
         "header_to",
         "subject",
-        "snippet",
-        "message_id",
-        "thread_id",
+        "decoded_snippet",
+        "thread_message_count",
         "history_id",
+        "account_email",
         "email_addresses_count",
     )
     list_filter = (
@@ -164,15 +200,44 @@ class GoogleMailMessageAdmin(admin.ModelAdmin):
 
     @admin.display(description="Header From", ordering=None)
     def header_from(self, obj) -> str:
-        return str(obj.header_from)
+        return decode_mime_header(obj.header_from)
 
     @admin.display(description="Header To", ordering=None)
     def header_to(self, obj) -> str:
-        return ", ".join([str(a) for a in obj.header_to]) if obj.header_to else ""
+        if not obj.header_to:
+            return ""
+        decoded_addresses = [decode_mime_header(addr) for addr in obj.header_to]
+        return ", ".join(decoded_addresses)
 
     @admin.display(description="Subject", ordering=None)
     def subject(self, obj) -> str:
         return obj.header_subject
+
+    @admin.display(description="Snippet", ordering=None)
+    def decoded_snippet(self, obj) -> str:
+        """Display snippet with HTML entities decoded"""
+        return html.unescape(obj.snippet) if obj.snippet else ""
+
+    @admin.display(description="Thread Messages", ordering=None)
+    def thread_message_count(self, obj):
+        """Display count of messages in thread as clickable link to filter by thread"""
+        if not obj.thread_id:
+            return "No thread"
+        
+        # Count messages in this thread
+        count = GoogleMailMessage.objects.filter(thread_id=obj.thread_id).count()
+        
+        # Create URL for filtering by this thread_id
+        url = reverse('admin:google_email_indexer_googlemailmessage_changelist')
+        filter_url = f"{url}?thread_id__exact={obj.thread_id}"
+        
+        # Return clickable link with count
+        return format_html(
+            '<a href="{}" title="View all {} messages in this thread">{} messages</a>',
+            filter_url,
+            count,
+            count
+        )
 
     @admin.display(description="Email Count", ordering=None)
     def email_addresses_count(self, obj) -> int:
