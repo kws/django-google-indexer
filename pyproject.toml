@@ -5,7 +5,6 @@ description = ""
 authors = [
     {name = "Kaj Siebert",email = "kaj@k-si.com"}
 ]
-readme = "README.md"
 requires-python = ">=3.11,<4.0.0"
 dependencies = [
     "django (>=5.2.3,<6.0.0)",
@@ -17,6 +16,8 @@ dependencies = [
     "rich>=13.0.0"
 ]
 
+[tool.poetry]
+packages = [{include = "google_email_indexer"}]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

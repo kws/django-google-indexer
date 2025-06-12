@@ -1,8 +1,123 @@
 from datetime import datetime
 
 from django.contrib import admin
+from django.db.models import Q
 
-from .models import GoogleMailMessage
+from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
+
+
+# Inline classes defined first
+class MessageEmailAddressInline(admin.TabularInline):
+    model = MessageEmailAddress
+    extra = 0
+    readonly_fields = ("email_address", "field", "display_name")
+    can_delete = False
+    show_change_link = True
+    verbose_name = "Email Address"
+    verbose_name_plural = "Email Addresses in this Message"
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('email_address')
+
+
+class MessageInline(admin.TabularInline):
+    model = GoogleMailMessage.email_addresses.through
+    extra = 0
+    readonly_fields = ("message", "field", "display_name")
+    can_delete = False
+    show_change_link = True
+    verbose_name = "Message"
+    verbose_name_plural = "Messages containing this Email Address"
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('message')
+
+
+# Filter classes
+class EmailAddressFilter(admin.SimpleListFilter):
+    """Custom filter to filter messages by email address"""
+    title = 'email address'
+    parameter_name = 'email_address'
+
+    def lookups(self, request, model_admin):
+        # Get email addresses sorted alphabetically for easier finding
+        emails = IndexedEmailAddress.objects.filter(
+            message_count__gt=0
+        ).order_by('email')[:100]  # Increased limit since alphabetical is easier to browse
+        return [(email.email, f"{email.email} ({email.message_count} messages)") for email in emails]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(email_addresses__email=self.value()).distinct()
+        return queryset
+
+
+class EmailFieldFilter(admin.SimpleListFilter):
+    """Filter messages by which field an email address appears in"""
+    title = 'email field type'
+    parameter_name = 'email_field'
+
+    def lookups(self, request, model_admin):
+        return MessageEmailAddress.FIELD_CHOICES
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(messageemailaddress__field=self.value()).distinct()
+        return queryset
+
+
+class SenderFilter(admin.SimpleListFilter):
+    """Filter messages by sender email address"""
+    title = 'sender'
+    parameter_name = 'sender'
+
+    def lookups(self, request, model_admin):
+        # Get senders sorted alphabetically for easier finding
+        from django.db.models import Count
+        senders = IndexedEmailAddress.objects.filter(
+            messageemailaddress__field='from'
+        ).annotate(
+            from_count=Count('messageemailaddress', filter=Q(messageemailaddress__field='from'))
+        ).filter(
+            from_count__gt=0
+        ).order_by('email').distinct()[:50]  # Alphabetical order, increased limit
+        
+        return [(sender.email, f"{sender.email} ({sender.from_count} sent)") for sender in senders]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(
+                messageemailaddress__email_address__email=self.value(),
+                messageemailaddress__field='from'
+            ).distinct()
+        return queryset
+
+
+class RecipientFilter(admin.SimpleListFilter):
+    """Filter messages by recipient email address (to/cc)"""
+    title = 'recipient'
+    parameter_name = 'recipient'
+
+    def lookups(self, request, model_admin):
+        # Get recipients sorted alphabetically for easier finding
+        from django.db.models import Count
+        recipients = IndexedEmailAddress.objects.filter(
+            messageemailaddress__field__in=['to', 'cc']
+        ).annotate(
+            recipient_count=Count('messageemailaddress', filter=Q(messageemailaddress__field__in=['to', 'cc']))
+        ).filter(
+            recipient_count__gt=0
+        ).order_by('email').distinct()[:50]  # Alphabetical order, increased limit
+        
+        return [(recipient.email, f"{recipient.email} ({recipient.recipient_count} received)") for recipient in recipients]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(
+                messageemailaddress__email_address__email=self.value(),
+                messageemailaddress__field__in=['to', 'cc']
+            ).distinct()
+        return queryset
 
 
 @admin.register(GoogleMailMessage)
@@ -17,9 +132,29 @@ class GoogleMailMessageAdmin(admin.ModelAdmin):
         "message_id",
         "thread_id",
         "history_id",
+        "email_addresses_count",
     )
-    list_filter = ("account_email", "is_read", "is_starred", "is_important")
-    search_fields = ("raw",)
+    list_filter = (
+        "account_email", 
+        "is_read", 
+        "is_starred", 
+        "is_important",
+        EmailAddressFilter,
+        EmailFieldFilter,
+        SenderFilter,
+        RecipientFilter,
+        "created_at",
+    )
+    search_fields = (
+        "raw", 
+        "snippet", 
+        "message_id", 
+        "thread_id",
+        "messageemailaddress__email_address__email",
+        "messageemailaddress__display_name",
+    )
+    readonly_fields = ("email_addresses_display",)
+    inlines = [MessageEmailAddressInline]
 
     @admin.display(description="Date", ordering="internal_date")
     def formated_date(self, obj) -> str:
@@ -38,3 +173,105 @@ class GoogleMailMessageAdmin(admin.ModelAdmin):
     @admin.display(description="Subject", ordering=None)
     def subject(self, obj) -> str:
         return obj.header_subject
+
+    @admin.display(description="Email Count", ordering=None)
+    def email_addresses_count(self, obj) -> int:
+        """Display the number of unique email addresses in this message"""
+        return obj.email_addresses.count()
+
+    @admin.display(description="Email Addresses")
+    def email_addresses_display(self, obj) -> str:
+        """Display all email addresses associated with this message"""
+        relationships = obj.messageemailaddress_set.select_related('email_address').all()
+        if not relationships:
+            return "No indexed email addresses"
+        
+        grouped = {}
+        for rel in relationships:
+            field = rel.field
+            if field not in grouped:
+                grouped[field] = []
+            display_name = rel.display_name or rel.email_address.email
+            grouped[field].append(f"{display_name} <{rel.email_address.email}>")
+        
+        result = []
+        for field, emails in grouped.items():
+            result.append(f"{field.upper()}: {', '.join(emails)}")
+        
+        return "\n".join(result)
+
+    def get_queryset(self, request):
+        # Optimize queries by prefetching related email addresses
+        return super().get_queryset(request).prefetch_related(
+            'email_addresses',
+            'messageemailaddress_set__email_address'
+        )
+
+
+@admin.register(IndexedEmailAddress)
+class IndexedEmailAddressAdmin(admin.ModelAdmin):
+    list_display = (
+        "email",
+        "display_name",
+        "message_count",
+        "field_distribution",
+        "first_seen",
+        "last_seen",
+    )
+    list_filter = ("first_seen", "last_seen", "message_count")
+    search_fields = ("email", "display_name")
+    readonly_fields = ("first_seen", "last_seen", "message_count")
+    ordering = ("-message_count", "email")
+    inlines = [MessageInline]
+    
+    @admin.display(description="Field Distribution")
+    def field_distribution(self, obj) -> str:
+        """Show distribution of fields this email appears in"""
+        from django.db.models import Count
+        field_counts = obj.messageemailaddress_set.values('field').annotate(
+            count=Count('field')
+        ).order_by('-count')
+        
+        if not field_counts:
+            return "No fields"
+        
+        parts = []
+        for item in field_counts:
+            parts.append(f"{item['field']}: {item['count']}")
+        
+        return ", ".join(parts)
+    
+    def get_queryset(self, request):
+        # Optimize queries by selecting related data
+        return super().get_queryset(request).prefetch_related(
+            'messages',
+            'messageemailaddress_set'
+        )
+
+
+@admin.register(MessageEmailAddress)
+class MessageEmailAddressAdmin(admin.ModelAdmin):
+    list_display = (
+        "email_address",
+        "message_snippet",
+        "field",
+        "display_name",
+        "message_date",
+    )
+    list_filter = ("field", "email_address__email")
+    search_fields = ("email_address__email", "display_name", "message__snippet")
+    readonly_fields = ("message", "email_address", "field", "display_name")
+    
+    @admin.display(description="Message", ordering="message__internal_date")
+    def message_snippet(self, obj) -> str:
+        return f"{obj.message.message_id} - {obj.message.snippet[:50]}..."
+    
+    @admin.display(description="Date", ordering="message__internal_date")
+    def message_date(self, obj) -> str:
+        return datetime.fromtimestamp(obj.message.internal_date / 1000).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    
+    def get_queryset(self, request):
+        # Optimize queries by selecting related data
+        return super().get_queryset(request).select_related('message', 'email_address')

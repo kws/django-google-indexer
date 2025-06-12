@@ -31,6 +31,56 @@ class EmailAddress(namedtuple("BaseEmailAddress", "name email")):
         return formataddr(self)
 
 
+class IndexedEmailAddress(models.Model):
+    """Stores unique email addresses for indexing and filtering"""
+    email = models.EmailField(unique=True, help_text="Normalized (lowercase) email address")
+    display_name = models.CharField(max_length=255, blank=True, help_text="Most common display name for this email")
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+    message_count = models.PositiveIntegerField(default=0, help_text="Number of messages this email appears in")
+    
+    class Meta:
+        ordering = ['email']
+        indexes = [
+            models.Index(fields=['email']),
+            models.Index(fields=['message_count']),
+        ]
+    
+    def __str__(self):
+        return self.email
+    
+    def save(self, *args, **kwargs):
+        # Ensure email is stored in lowercase for case-insensitive lookups
+        self.email = self.email.lower()
+        super().save(*args, **kwargs)
+
+
+class MessageEmailAddress(models.Model):
+    """Through model for many-to-many relationship between messages and email addresses"""
+    FIELD_CHOICES = [
+        ('from', 'From'),
+        ('to', 'To'), 
+        ('cc', 'CC'),
+        ('bcc', 'BCC'),
+        ('reply_to', 'Reply-To'),
+    ]
+    
+    message = models.ForeignKey('GoogleMailMessage', on_delete=models.CASCADE)
+    email_address = models.ForeignKey('IndexedEmailAddress', on_delete=models.CASCADE)
+    field = models.CharField(max_length=10, choices=FIELD_CHOICES, help_text="Which email field this address appears in")
+    display_name = models.CharField(max_length=255, blank=True, help_text="Display name used in this specific message")
+    
+    class Meta:
+        unique_together = ['message', 'email_address', 'field']
+        indexes = [
+            models.Index(fields=['message', 'field']),
+            models.Index(fields=['email_address', 'field']),
+        ]
+    
+    def __str__(self):
+        return f"{self.email_address.email} ({self.field}) in {self.message.message_id}"
+
+
 def _as_text(value):
     if isinstance(value, list):
         return [_as_text(v) for v in value]
@@ -54,6 +104,14 @@ class GoogleMailMessage(models.Model):
     is_read = models.BooleanField(default=False)
     is_starred = models.BooleanField(default=False)
     is_important = models.BooleanField(default=False)
+    
+    # Many-to-many relationship with email addresses
+    email_addresses = models.ManyToManyField(
+        'IndexedEmailAddress',
+        through='MessageEmailAddress',
+        related_name='messages',
+        help_text="Email addresses that appear in this message"
+    )
     
     # Timestamps for tracking
     created_at = models.DateTimeField(auto_now_add=True)
@@ -160,4 +218,49 @@ class GoogleMailMessage(models.Model):
                         'content_type': part.get_content_type(),
                         'size': len(part.get_payload(decode=True)) if part.get_payload() else 0
                     }
+
+    def index_email_addresses(self):
+        """Extract and index all email addresses from this message"""
+        from django.utils import timezone
+        
+        # Clear existing email address relationships for this message
+        self.messageemailaddress_set.all().delete()
+        
+        email_field_mapping = [
+            ('from', [self.header_from] if self.header_from else []),
+            ('to', self.header_to or []),
+            ('cc', self.header_cc or []),
+            # Add more fields as needed (bcc, reply_to, etc.)
+        ]
+        
+        for field_name, email_list in email_field_mapping:
+            for email_addr in email_list:
+                if email_addr and email_addr.email:
+                    # Get or create the indexed email address
+                    indexed_email, created = IndexedEmailAddress.objects.get_or_create(
+                        email=email_addr.email.lower(),
+                        defaults={
+                            'display_name': email_addr.name or '',
+                            'message_count': 0
+                        }
+                    )
+                    
+                    # Update the display name if this one is better (has a name when the stored one doesn't)
+                    if email_addr.name and not indexed_email.display_name:
+                        indexed_email.display_name = email_addr.name
+                        indexed_email.save()
+                    
+                    # Create the relationship
+                    MessageEmailAddress.objects.get_or_create(
+                        message=self,
+                        email_address=indexed_email,
+                        field=field_name,
+                        defaults={'display_name': email_addr.name or ''}
+                    )
+        
+        # Update message counts for all related email addresses
+        for email_addr in self.email_addresses.all():
+            email_addr.message_count = email_addr.messages.count()
+            email_addr.last_seen = timezone.now()
+            email_addr.save()
 
