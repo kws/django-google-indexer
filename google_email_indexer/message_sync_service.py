@@ -105,6 +105,7 @@ class MessageSyncService:
         # Process messages in batches for better performance
         batch_size = 50
         for i in range(0, len(messages), batch_size):
+            print(f"Processing batch {i} of {len(messages)}")
             batch = messages[i:i + batch_size]
             batch_stats = self._process_message_batch(batch, force_update=False)
             

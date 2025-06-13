@@ -279,32 +279,14 @@ class IndexedEmailAddressAdmin(admin.ModelAdmin):
         "email",
         "display_name",
         "message_count",
-        "field_distribution",
         "first_seen",
         "last_seen",
     )
-    list_filter = ("first_seen", "last_seen", "message_count")
+    list_filter = ("first_seen", "last_seen")
     search_fields = ("email", "display_name")
     readonly_fields = ("first_seen", "last_seen", "message_count")
     ordering = ("-message_count", "email")
     inlines = [MessageInline]
-    
-    @admin.display(description="Field Distribution")
-    def field_distribution(self, obj) -> str:
-        """Show distribution of fields this email appears in"""
-        from django.db.models import Count
-        field_counts = obj.messageemailaddress_set.values('field').annotate(
-            count=Count('field')
-        ).order_by('-count')
-        
-        if not field_counts:
-            return "No fields"
-        
-        parts = []
-        for item in field_counts:
-            parts.append(f"{item['field']}: {item['count']}")
-        
-        return ", ".join(parts)
     
     def get_queryset(self, request):
         # Optimize queries by selecting related data

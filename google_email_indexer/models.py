@@ -1,6 +1,6 @@
 import json
 from collections import namedtuple
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr, parseaddr, parsedate_to_datetime
 from mailbox import Message
 
 from django.db import models
@@ -35,8 +35,8 @@ class IndexedEmailAddress(models.Model):
     """Stores unique email addresses for indexing and filtering"""
     email = models.EmailField(unique=True, help_text="Normalized (lowercase) email address")
     display_name = models.CharField(max_length=255, blank=True, help_text="Most common display name for this email")
-    first_seen = models.DateTimeField(auto_now_add=True)
-    last_seen = models.DateTimeField(auto_now=True)
+    first_seen = models.DateTimeField(null=True, blank=True, help_text="When this email address first appeared in a message")
+    last_seen = models.DateTimeField(null=True, blank=True, help_text="When this email address last appeared in a message")
     message_count = models.PositiveIntegerField(default=0, help_text="Number of messages this email appears in")
     
     class Meta:
@@ -222,6 +222,20 @@ class GoogleMailMessage(models.Model):
     def index_email_addresses(self):
         """Extract and index all email addresses from this message"""
         from django.utils import timezone
+        from datetime import datetime
+        from email.utils import parsedate_to_datetime
+        
+        # Get the email date from the message headers
+        date_str = self.mbox.get('Date')
+        if date_str:
+            try:
+                message_date = parsedate_to_datetime(date_str)
+            except (TypeError, ValueError):
+                # Fallback to internal_date if Date header is invalid
+                message_date = datetime.fromtimestamp(self.internal_date / 1000.0)
+        else:
+            # Fallback to internal_date if no Date header
+            message_date = datetime.fromtimestamp(self.internal_date / 1000.0)
         
         # Clear existing email address relationships for this message
         self.messageemailaddress_set.all().delete()
@@ -241,14 +255,24 @@ class GoogleMailMessage(models.Model):
                         email=email_addr.email.lower(),
                         defaults={
                             'display_name': email_addr.name or '',
-                            'message_count': 0
+                            'message_count': 0,
+                            'first_seen': message_date,
+                            'last_seen': message_date
                         }
                     )
                     
                     # Update the display name if this one is better (has a name when the stored one doesn't)
                     if email_addr.name and not indexed_email.display_name:
                         indexed_email.display_name = email_addr.name
-                        indexed_email.save()
+                    
+                    # For existing records, update first_seen if it's not set or if this message is older
+                    if not created:
+                        if indexed_email.first_seen is None or message_date < indexed_email.first_seen:
+                            indexed_email.first_seen = message_date
+                        if indexed_email.last_seen is None or message_date > indexed_email.last_seen:
+                            indexed_email.last_seen = message_date
+                    
+                    indexed_email.save()
                     
                     # Create the relationship
                     MessageEmailAddress.objects.get_or_create(
@@ -261,6 +285,5 @@ class GoogleMailMessage(models.Model):
         # Update message counts for all related email addresses
         for email_addr in self.email_addresses.all():
             email_addr.message_count = email_addr.messages.count()
-            email_addr.last_seen = timezone.now()
             email_addr.save()
 

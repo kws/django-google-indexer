@@ -3,6 +3,8 @@ from typing import List, Optional, Tuple
 from django.db import transaction
 from django.utils import timezone
 from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
+from email.header import decode_header
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,26 @@ class EmailIndexingService:
             raise
 
     @staticmethod
+    def decode_name(name_value):
+        """Decode MIME-encoded names to readable text"""
+        if not name_value:
+            return ""
+        
+        try:
+            # Decode the name if it's MIME encoded
+            decoded_parts = decode_header(name_value)
+            decoded_name = ""
+            for part, encoding in decoded_parts:
+                if isinstance(part, bytes):
+                    decoded_name += part.decode(encoding or 'utf-8', errors='replace')
+                else:
+                    decoded_name += part
+            return decoded_name
+        except Exception:
+            # Fallback to original string if decoding fails
+            return str(name_value)
+
+    @staticmethod
     def _create_email_relationship(
         message: GoogleMailMessage, 
         email_addr, 
@@ -78,19 +100,22 @@ class EmailIndexingService:
             
             if not normalized_email:
                 return False
+            
+            # Decode the display name if present
+            decoded_name = EmailIndexingService.decode_name(email_addr.name) if email_addr.name else ''
                 
             # Get or create the indexed email address
             indexed_email, _ = IndexedEmailAddress.objects.get_or_create(
                 email=normalized_email,
                 defaults={
-                    'display_name': email_addr.name or '',
+                    'display_name': decoded_name,
                     'message_count': 0
                 }
             )
             
             # Update display name if this one is better
-            if email_addr.name and not indexed_email.display_name:
-                indexed_email.display_name = email_addr.name
+            if decoded_name and not indexed_email.display_name:
+                indexed_email.display_name = decoded_name
                 indexed_email.save()
             
             # Create the relationship
@@ -98,7 +123,7 @@ class EmailIndexingService:
                 message=message,
                 email_address=indexed_email,
                 field=field_name,
-                defaults={'display_name': email_addr.name or ''}
+                defaults={'display_name': decoded_name}
             )
             
             return created
@@ -113,7 +138,6 @@ class EmailIndexingService:
         try:
             for email_addr in message.email_addresses.all():
                 email_addr.message_count = email_addr.messages.count()
-                email_addr.last_seen = timezone.now()
                 email_addr.save()
         except Exception as e:
             logger.error(f'Error updating message counts for message {message.message_id}: {e}')
@@ -166,10 +190,23 @@ class EmailIndexingService:
         """Update message counts for all indexed email addresses"""
         try:
             for indexed_email in IndexedEmailAddress.objects.all():
-                message_count = indexed_email.messages.count()
-                if indexed_email.message_count != message_count:
+                # Get all messages for this email address
+                messages = indexed_email.messages.all()
+                message_count = messages.count()
+                
+                if message_count > 0:
+                    # Get the earliest and latest message dates
+                    earliest_date = messages.order_by('internal_date').first().internal_date
+                    latest_date = messages.order_by('-internal_date').first().internal_date
+                    
+                    # Convert to datetime
+                    first_seen = datetime.fromtimestamp(earliest_date / 1000.0)
+                    last_seen = datetime.fromtimestamp(latest_date / 1000.0)
+                    
+                    # Update the email address record
                     indexed_email.message_count = message_count
-                    indexed_email.last_seen = timezone.now()
+                    indexed_email.first_seen = first_seen
+                    indexed_email.last_seen = last_seen
                     indexed_email.save()
         except Exception as e:
             logger.error(f'Error updating all message counts: {e}')
