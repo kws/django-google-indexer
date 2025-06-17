@@ -136,7 +136,9 @@ class GoogleMailMessage(models.Model):
     @property
     def mbox(self):
         if not getattr(self, "_mbox", None):
-            self._mbox = Message(self.raw)
+            # Convert memoryview to bytes if necessary
+            raw_data = bytes(self.raw) if isinstance(self.raw, memoryview) else self.raw
+            self._mbox = Message(raw_data)
         return self._mbox
 
     @property
