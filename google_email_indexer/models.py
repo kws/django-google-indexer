@@ -5,18 +5,32 @@ from mailbox import Message
 
 from django.db import models
 
-class EmailAddress(namedtuple("BaseEmailAddress", "name email")):
+def _decode_name(name):
+    if name.startswith("=?") and name.endswith("?="):
+        try:
+            import email
+            new_name, encoding = email.header.decode_header(name)[0]
+            if isinstance(new_name, bytes):
+                new_name = new_name.decode(encoding or 'utf-8')
+            name = new_name
+        except Exception as e:
+            pass
+
+    return name
+
+class EmailAddress(namedtuple("EmailAddress", "name email")):
     __slots__ = ()
 
     @classmethod
     def from_rfc_address(cls, rfc_address):
         name, email = parseaddr(rfc_address)
+        name = _decode_name(name)
         return cls(name, email)
     
     @classmethod
     def from_header_value(cls, header_value):
         all_recipients = getaddresses(header_value)
-        return [cls(n, a) for n, a in all_recipients]
+        return [cls(_decode_name(n), a) for n, a in all_recipients]
 
     def __str__(self):
         return formataddr(self)
