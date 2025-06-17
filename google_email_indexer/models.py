@@ -1,10 +1,25 @@
 import json
 from collections import namedtuple
-from email.utils import formataddr, parseaddr, parsedate_to_datetime
+from email.utils import formataddr, parseaddr, parsedate_to_datetime, getaddresses
 from mailbox import Message
 
 from django.db import models
 
+class EmailAddress(namedtuple("BaseEmailAddress", "name email")):
+    __slots__ = ()
+
+    @classmethod
+    def from_rfc_address(cls, rfc_address):
+        name, email = parseaddr(rfc_address)
+        return cls(name, email)
+    
+    @classmethod
+    def from_header_value(cls, header_value):
+        all_recipients = getaddresses(header_value)
+        return [cls(n, a) for n, a in all_recipients]
+
+    def __str__(self):
+        return formataddr(self)
 
 class SyncState(models.Model):
     """Tracks sync state for each Gmail account"""
@@ -19,16 +34,7 @@ class SyncState(models.Model):
         return f"SyncState for {self.account_email} (History ID: {self.last_history_id})"
 
 
-class EmailAddress(namedtuple("BaseEmailAddress", "name email")):
-    __slots__ = ()
 
-    @classmethod
-    def from_rfc_address(cls, rfc_address):
-        name, email = parseaddr(rfc_address)
-        return cls(name, email)
-
-    def __str__(self):
-        return formataddr(self)
 
 
 class IndexedEmailAddress(models.Model):
@@ -188,12 +194,12 @@ class GoogleMailMessage(models.Model):
         return EmailAddress.from_rfc_address(self.mbox.get("From"))
 
     @property
-    def header_to(self) -> EmailAddress:
-        return [EmailAddress.from_rfc_address(a) for a in self.mbox.get_all("To", [])]
+    def header_to(self) -> list[EmailAddress]:
+        return EmailAddress.from_header_value(self.mbox.get_all("to", []))
 
     @property
-    def header_cc(self) -> EmailAddress:
-        return [EmailAddress.from_rfc_address(a) for a in self.mbox.get_all("Cc", [])]
+    def header_cc(self) -> list[EmailAddress]:
+        return EmailAddress.from_header_value(self.mbox.get_all("cc", []))
 
     @property
     def header_subject(self) -> str:
