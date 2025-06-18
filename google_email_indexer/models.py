@@ -4,6 +4,7 @@ from email.utils import formataddr, parseaddr, parsedate_to_datetime, getaddress
 from mailbox import Message
 
 from django.db import models
+from django.utils import timezone
 
 def _decode_name(name):
     if name.startswith("=?") and name.endswith("?="):
@@ -243,7 +244,6 @@ class GoogleMailMessage(models.Model):
 
     def index_email_addresses(self):
         """Extract and index all email addresses from this message"""
-        from django.utils import timezone
         from datetime import datetime
         from email.utils import parsedate_to_datetime
         
@@ -252,12 +252,19 @@ class GoogleMailMessage(models.Model):
         if date_str:
             try:
                 message_date = parsedate_to_datetime(date_str)
+                # Ensure timezone awareness
+                if timezone.is_naive(message_date):
+                    message_date = timezone.make_aware(message_date)
             except (TypeError, ValueError):
                 # Fallback to internal_date if Date header is invalid
-                message_date = datetime.fromtimestamp(self.internal_date / 1000.0)
+                message_date = timezone.make_aware(
+                    datetime.fromtimestamp(self.internal_date / 1000.0)
+                )
         else:
             # Fallback to internal_date if no Date header
-            message_date = datetime.fromtimestamp(self.internal_date / 1000.0)
+            message_date = timezone.make_aware(
+                datetime.fromtimestamp(self.internal_date / 1000.0)
+            )
         
         # Clear existing email address relationships for this message
         self.messageemailaddress_set.all().delete()

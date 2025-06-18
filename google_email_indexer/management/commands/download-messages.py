@@ -212,7 +212,8 @@ class Command(BaseCommand):
                 # Format the date
                 try:
                     from datetime import datetime
-                    date_str = datetime.fromtimestamp(int(msg.internal_date) / 1000).strftime("%Y-%m-%d %H:%M")
+                    from django.utils import timezone
+                    date_str = timezone.make_aware(datetime.fromtimestamp(int(msg.internal_date) / 1000)).strftime("%Y-%m-%d %H:%M")
                 except:
                     date_str = "Unknown"
                 

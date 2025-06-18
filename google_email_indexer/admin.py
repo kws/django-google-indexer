@@ -2,11 +2,11 @@ from datetime import datetime
 from email.header import decode_header
 from email.utils import parseaddr
 import html
-
 from django.contrib import admin
 from django.db.models import Q
 from django.urls import reverse
 from django.utils.html import format_html
+from django.utils import timezone
 
 from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
 
@@ -194,7 +194,7 @@ class GoogleMailMessageAdmin(admin.ModelAdmin):
 
     @admin.display(description="Date", ordering="internal_date")
     def formated_date(self, obj) -> str:
-        return datetime.fromtimestamp(obj.internal_date / 1000).strftime(
+        return timezone.make_aware(datetime.fromtimestamp(obj.internal_date / 1000)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
 
@@ -315,7 +315,7 @@ class MessageEmailAddressAdmin(admin.ModelAdmin):
     
     @admin.display(description="Date", ordering="message__internal_date")
     def message_date(self, obj) -> str:
-        return datetime.fromtimestamp(obj.message.internal_date / 1000).strftime(
+        return timezone.make_aware(datetime.fromtimestamp(obj.message.internal_date / 1000)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
     

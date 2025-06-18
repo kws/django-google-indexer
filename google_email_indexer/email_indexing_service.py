@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional, Tuple
 from django.db import transaction
 from django.utils import timezone
+from django.db.models import Count
 from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
 from email.header import decode_header
 from datetime import datetime
@@ -199,9 +200,13 @@ class EmailIndexingService:
                     earliest_date = messages.order_by('internal_date').first().internal_date
                     latest_date = messages.order_by('-internal_date').first().internal_date
                     
-                    # Convert to datetime
-                    first_seen = datetime.fromtimestamp(earliest_date / 1000.0)
-                    last_seen = datetime.fromtimestamp(latest_date / 1000.0)
+                    # Convert to timezone-aware datetime
+                    first_seen = timezone.make_aware(
+                        datetime.fromtimestamp(earliest_date / 1000.0)
+                    )
+                    last_seen = timezone.make_aware(
+                        datetime.fromtimestamp(latest_date / 1000.0)
+                    )
                     
                     # Update the email address record
                     indexed_email.message_count = message_count
@@ -332,4 +337,30 @@ class EmailIndexingService:
             queryset = queryset.filter(account_email=account_email)
         
         # Rebuild index
-        return EmailIndexingService.bulk_index_messages(queryset, batch_size) 
+        return EmailIndexingService.bulk_index_messages(queryset, batch_size)
+
+    @staticmethod
+    def cleanup_orphaned_emails() -> int:
+        """
+        Remove email addresses that have no associated messages.
+        
+        Returns:
+            Number of orphaned email addresses removed
+        """
+        try:
+            # Find email addresses with no messages
+            orphaned_emails = IndexedEmailAddress.objects.annotate(
+                message_count_actual=Count('messages')
+            ).filter(message_count_actual=0)
+            
+            orphaned_count = orphaned_emails.count()
+            
+            if orphaned_count > 0:
+                logger.info(f'Removing {orphaned_count} orphaned email addresses')
+                orphaned_emails.delete()
+            
+            return orphaned_count
+            
+        except Exception as e:
+            logger.error(f'Error cleaning up orphaned emails: {e}')
+            raise 
