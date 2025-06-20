@@ -415,3 +415,56 @@ class MessageSyncService:
             enhanced_labels.append(enhanced_label)
         
         return enhanced_labels 
+    
+
+def display_sync_results(console, sync_result: dict, verbose: bool):
+    """Display sync results in a formatted way."""
+    sync_type = sync_result.get('sync_type', 'unknown')
+    label_filter = sync_result.get('label_filter')
+    
+    # Create title with label filter info
+    title = f"Sync Results - {sync_type.title()} Sync"
+    if label_filter:
+        title += f" (Filtered by labels)"
+    
+    # Create summary table
+    table = Table(title=title)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="green")
+    
+    if sync_type == 'full':
+        table.add_row("Total Found", str(sync_result.get('total_found', 0)))
+        table.add_row("New Messages", str(sync_result.get('new_messages', 0)))
+        table.add_row("Updated Messages", str(sync_result.get('updated_messages', 0)))
+    else:  # incremental
+        table.add_row("History Records", str(sync_result.get('history_records', 0)))
+        table.add_row("Messages Added", str(sync_result.get('messages_added', 0)))
+        table.add_row("Messages Deleted", str(sync_result.get('messages_deleted', 0)))
+        table.add_row("Labels Modified", str(sync_result.get('labels_modified', 0)))
+    
+    # Add common metrics
+    errors = sync_result.get('errors', [])
+    table.add_row("Errors", str(len(errors)), style="red" if errors else "green")
+    
+    console.print(table)
+    
+    # Show label filter details
+    if label_filter:
+        console.print(f"[dim]Applied label filter: {', '.join(label_filter)}[/dim]")
+    
+    # Show history ID info
+    history_id = sync_result.get('history_id')
+    if history_id:
+        console.print(f"[dim]Latest History ID: {history_id}[/dim]")
+    
+    # Show errors if any
+    if errors and verbose:
+        console.print("\n[bold red]Errors:[/bold red]")
+        for error in errors[:10]:  # Limit to first 10 errors
+            console.print(f"  • {error}")
+        if len(errors) > 10:
+            console.print(f"  ... and {len(errors) - 10} more errors")
+    
+    # Show database summary
+    total_messages = GoogleMailMessage.objects.count()
+    console.print(f"\n[dim]Total messages in database: {total_messages}[/dim]")

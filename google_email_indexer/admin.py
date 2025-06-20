@@ -8,7 +8,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 from django.utils import timezone
 
-from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
+from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress, MesssageSource
 
 
 def decode_mime_header(header_value):
@@ -322,3 +322,8 @@ class MessageEmailAddressAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         # Optimize queries by selecting related data
         return super().get_queryset(request).select_related('message', 'email_address')
+
+@admin.register(MesssageSource)
+class MesssageSourceAdmin(admin.ModelAdmin):
+    list_display = ("inbox", "labels", "description")
+    search_fields = ("inbox", "labels", "description")

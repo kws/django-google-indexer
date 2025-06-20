@@ -2,6 +2,7 @@ import json
 from collections import namedtuple
 from email.utils import formataddr, parseaddr, parsedate_to_datetime, getaddresses
 from mailbox import Message
+from rich.table import Table
 
 from django.db import models
 from django.utils import timezone
@@ -34,7 +35,7 @@ class EmailAddress(namedtuple("EmailAddress", "name email")):
         return [cls(_decode_name(n), a) for n, a in all_recipients]
 
     def __str__(self):
-        return formataddr(self)
+        return f"{self.name} <{self.email}>"
 
 class SyncState(models.Model):
     """Tracks sync state for each Gmail account"""
@@ -315,4 +316,44 @@ class GoogleMailMessage(models.Model):
         for email_addr in self.email_addresses.all():
             email_addr.message_count = email_addr.messages.count()
             email_addr.save()
+
+
+class MesssageSource(models.Model):
+    """
+    A source of messages.
+    """
+    inbox = models.EmailField(
+        verbose_name="Inbox",
+        help_text="Inbox email address",
+    )
+    labels = models.CharField(
+        max_length=255,
+        verbose_name="Labels",
+        help_text="Labels for the message source (comma separated list)",
+        null=True,
+        blank=True,
+    )
+    description = models.TextField(
+        verbose_name="Description",
+        help_text="Description of the message source",
+        null=True,
+        blank=True, 
+    )
+    is_active = models.BooleanField(
+        verbose_name="Is Active",
+        help_text="Whether the message source is active",
+        default=True,
+    )
+    priority = models.IntegerField(
+        verbose_name="Priority",
+        help_text="Priority of the message source",
+        default=0,
+    )
+    
+    class Meta:
+        verbose_name = "Message Source"
+        verbose_name_plural = "Message Sources"
+        ordering = ['inbox']
+        unique_together = ['inbox', 'labels']
+
 

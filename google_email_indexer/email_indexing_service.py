@@ -6,6 +6,7 @@ from django.db.models import Count
 from .models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
 from email.header import decode_header
 from datetime import datetime
+from django.db.models import Q, F
 
 logger = logging.getLogger(__name__)
 
@@ -363,4 +364,191 @@ class EmailIndexingService:
             
         except Exception as e:
             logger.error(f'Error cleaning up orphaned emails: {e}')
+            raise
+
+    @staticmethod
+    def validate_index(account_email: Optional[str] = None) -> dict:
+        """
+        Check for missing or outdated index entries.
+        
+        Args:
+            account_email: If provided, only validate for this account
+            
+        Returns:
+            Dictionary containing validation results
+        """
+        try:
+            # Get base queryset
+            messages_queryset = GoogleMailMessage.objects.all()
+            if account_email:
+                messages_queryset = messages_queryset.filter(account_email=account_email)
+            
+            total_messages = messages_queryset.count()
+            
+            # Find messages that have no email relationships
+            messages_without_index = messages_queryset.exclude(
+                id__in=MessageEmailAddress.objects.values('message_id')
+            )
+            missing_count = messages_without_index.count()
+            
+            # Find orphaned index entries (email addresses with no messages)
+            orphaned_emails = IndexedEmailAddress.objects.annotate(
+                message_count_actual=Count('messages')
+            ).filter(message_count_actual=0)
+            orphaned_count = orphaned_emails.count()
+            
+            # Check for inconsistent message counts
+            inconsistent_emails = IndexedEmailAddress.objects.annotate(
+                message_count_actual=Count('messages')
+            ).filter(~Q(message_count=F('message_count_actual')))
+            inconsistent_count = inconsistent_emails.count()
+            
+            # Calculate total issues
+            total_issues = missing_count + orphaned_count + inconsistent_count
+            
+            return {
+                'total_messages': total_messages,
+                'missing_messages': missing_count,
+                'orphaned_emails': orphaned_count,
+                'inconsistent_counts': inconsistent_count,
+                'total_issues': total_issues,
+                'is_valid': total_issues == 0
+            }
+            
+        except Exception as e:
+            logger.error(f'Error validating index: {e}')
+            raise
+
+    @staticmethod
+    def fix_missing_entries(
+        account_email: Optional[str] = None, 
+        batch_size: int = 1000,
+        progress_callback: Optional[callable] = None
+    ) -> dict:
+        """
+        Index only messages that are missing from the index.
+        
+        Args:
+            account_email: If provided, only fix for this account
+            batch_size: Number of messages to process in each batch
+            progress_callback: Optional callback function for progress updates
+            
+        Returns:
+            Dictionary containing results
+        """
+        try:
+            # Get base queryset
+            messages_queryset = GoogleMailMessage.objects.all()
+            if account_email:
+                messages_queryset = messages_queryset.filter(account_email=account_email)
+            
+            # Find messages that have no email relationships
+            missing_messages = messages_queryset.exclude(
+                id__in=MessageEmailAddress.objects.values('message_id')
+            )
+            
+            missing_count = missing_messages.count()
+            
+            if missing_count == 0:
+                return {
+                    'processed_count': 0,
+                    'error_count': 0,
+                    'missing_count': 0
+                }
+            
+            # Use the service to process only missing messages
+            processed_count, error_count = EmailIndexingService.bulk_index_messages(
+                missing_messages,
+                batch_size=batch_size,
+                progress_callback=progress_callback
+            )
+            
+            # Update message counts for all email addresses to fix inconsistencies
+            EmailIndexingService.update_all_message_counts()
+            
+            return {
+                'processed_count': processed_count,
+                'error_count': error_count,
+                'missing_count': missing_count
+            }
+            
+        except Exception as e:
+            logger.error(f'Error fixing missing entries: {e}')
+            raise
+
+    @staticmethod
+    def maintenance_cleanup() -> dict:
+        """
+        Perform comprehensive maintenance cleanup operations.
+        
+        Returns:
+            Dictionary containing cleanup results
+        """
+        try:
+            results = {}
+            
+            # Clean up orphaned email addresses
+            orphaned_count = EmailIndexingService.cleanup_orphaned_emails()
+            results['orphaned_emails_removed'] = orphaned_count
+            
+            # Update all message counts to fix inconsistencies
+            EmailIndexingService.update_all_message_counts()
+            results['message_counts_updated'] = True
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f'Error during maintenance cleanup: {e}')
+            raise
+
+    @staticmethod
+    def get_index_statistics(account_email: Optional[str] = None) -> dict:
+        """
+        Get comprehensive statistics about the email index.
+        
+        Args:
+            account_email: If provided, only get stats for this account
+            
+        Returns:
+            Dictionary containing index statistics
+        """
+        try:
+            # Get base queryset
+            messages_queryset = GoogleMailMessage.objects.all()
+            if account_email:
+                messages_queryset = messages_queryset.filter(account_email=account_email)
+            
+            total_messages = messages_queryset.count()
+            total_indexed_emails = IndexedEmailAddress.objects.count()
+            total_relationships = MessageEmailAddress.objects.count()
+            
+            # Get field type distribution
+            field_counts = {}
+            for field_type, _ in MessageEmailAddress.FIELD_CHOICES:
+                count = MessageEmailAddress.objects.filter(field=field_type).count()
+                if count > 0:
+                    field_counts[field_type] = count
+            
+            # Get top email addresses by message count
+            top_emails = IndexedEmailAddress.objects.order_by('-message_count')[:10]
+            top_email_list = [
+                {
+                    'email': email.email,
+                    'display_name': email.display_name,
+                    'message_count': email.message_count
+                }
+                for email in top_emails
+            ]
+            
+            return {
+                'total_messages': total_messages,
+                'total_indexed_emails': total_indexed_emails,
+                'total_relationships': total_relationships,
+                'field_distribution': field_counts,
+                'top_email_addresses': top_email_list,
+                'account_email': account_email
+            }
+            
+        except Exception as e:
+            logger.error(f'Error getting index statistics: {e}')
             raise 

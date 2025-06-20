@@ -19,6 +19,12 @@ dependencies = [
 [tool.poetry]
 packages = [{include = "google_email_indexer"}]
 
+[tool.poetry.extras]
+celery = ["celery"]
+
+[tool.poetry.group.celery.dependencies]
+celery = "^5.5.3"
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

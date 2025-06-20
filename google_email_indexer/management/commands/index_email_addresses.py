@@ -1,6 +1,5 @@
 import logging
-from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Q, Count, F
+from django.core.management.base import BaseCommand
 from google_email_indexer.models import GoogleMailMessage, IndexedEmailAddress, MessageEmailAddress
 from google_email_indexer.email_indexing_service import EmailIndexingService
 
@@ -130,62 +129,16 @@ class Command(BaseCommand):
         """Check for missing or outdated index entries"""
         self.stdout.write('Validating email index...')
         
-        # Get base queryset
-        messages_queryset = GoogleMailMessage.objects.all()
-        if account_email:
-            messages_queryset = messages_queryset.filter(account_email=account_email)
+        # Use the service to validate the index
+        validation_results = EmailIndexingService.validate_index(account_email)
         
-        total_messages = messages_queryset.count()
-        self.stdout.write(f'Total messages in database: {total_messages}')
-        
-        # Find messages that have no email relationships
-        messages_without_index = messages_queryset.exclude(
-            id__in=MessageEmailAddress.objects.values('message_id')
-        )
-        
-        missing_count = messages_without_index.count()
-        self.stdout.write(f'Messages missing from index: {missing_count}')
-        
-        if missing_count > 0 and verbose:
-            self.stdout.write('\nSample messages missing from index:')
-            for msg in messages_without_index[:10]:
-                self.stdout.write(f'  - {msg.message_id} ({msg.account_email})')
-            if missing_count > 10:
-                self.stdout.write(f'  ... and {missing_count - 10} more')
-        
-        # Find orphaned index entries (email addresses with no messages)
-        orphaned_emails = IndexedEmailAddress.objects.annotate(
-            message_count_actual=Count('messages')
-        ).filter(message_count_actual=0)
-        
-        orphaned_count = orphaned_emails.count()
-        self.stdout.write(f'Orphaned email addresses: {orphaned_count}')
-        
-        if orphaned_count > 0 and verbose:
-            self.stdout.write('\nSample orphaned email addresses:')
-            for email in orphaned_emails[:10]:
-                self.stdout.write(f'  - {email.email}')
-            if orphaned_count > 10:
-                self.stdout.write(f'  ... and {orphaned_count - 10} more')
-        
-        # Check for inconsistent message counts
-        inconsistent_emails = IndexedEmailAddress.objects.annotate(
-            message_count_actual=Count('messages')
-        ).filter(~Q(message_count=F('message_count_actual')))
-        
-        inconsistent_count = inconsistent_emails.count()
-        self.stdout.write(f'Email addresses with inconsistent counts: {inconsistent_count}')
-        
-        if inconsistent_count > 0 and verbose:
-            self.stdout.write('\nSample inconsistent email addresses:')
-            for email in inconsistent_emails[:10]:
-                actual_count = email.messages.count()
-                self.stdout.write(f'  - {email.email}: stored={email.message_count}, actual={actual_count}')
-            if inconsistent_count > 10:
-                self.stdout.write(f'  ... and {inconsistent_count - 10} more')
+        self.stdout.write(f'Total messages in database: {validation_results["total_messages"]}')
+        self.stdout.write(f'Messages missing from index: {validation_results["missing_messages"]}')
+        self.stdout.write(f'Orphaned email addresses: {validation_results["orphaned_emails"]}')
+        self.stdout.write(f'Email addresses with inconsistent counts: {validation_results["inconsistent_counts"]}')
         
         # Summary
-        total_issues = missing_count + orphaned_count + inconsistent_count
+        total_issues = validation_results["total_issues"]
         if total_issues == 0:
             self.stdout.write(
                 self.style.SUCCESS('\n✅ Index validation passed - no issues found!')
@@ -194,9 +147,9 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.WARNING(
                     f'\n⚠️  Index validation found {total_issues} issues:\n'
-                    f'  - {missing_count} messages missing from index\n'
-                    f'  - {orphaned_count} orphaned email addresses\n'
-                    f'  - {inconsistent_count} inconsistent message counts\n\n'
+                    f'  - {validation_results["missing_messages"]} messages missing from index\n'
+                    f'  - {validation_results["orphaned_emails"]} orphaned email addresses\n'
+                    f'  - {validation_results["inconsistent_counts"]} inconsistent message counts\n\n'
                     f'Run with --fix-missing to repair missing entries.'
                 )
             )
@@ -205,47 +158,29 @@ class Command(BaseCommand):
         """Index only messages that are missing from the index"""
         self.stdout.write('Fixing missing index entries...')
         
-        # Get base queryset
-        messages_queryset = GoogleMailMessage.objects.all()
-        if account_email:
-            messages_queryset = messages_queryset.filter(account_email=account_email)
+        # Define progress callback for verbose output
+        def progress_callback(batch_start, batch_end, total):
+            self.stdout.write(f'Processing batch {batch_start + 1}-{batch_end} of {total}')
         
-        # Find messages that have no email relationships
-        missing_messages = messages_queryset.exclude(
-            id__in=MessageEmailAddress.objects.values('message_id')
+        # Use the service to fix missing entries
+        results = EmailIndexingService.fix_missing_entries(
+            account_email=account_email,
+            batch_size=batch_size,
+            progress_callback=progress_callback if verbose else None
         )
         
-        missing_count = missing_messages.count()
-        self.stdout.write(f'Found {missing_count} messages missing from index')
-        
-        if missing_count == 0:
+        if results['missing_count'] == 0:
             self.stdout.write(
                 self.style.SUCCESS('No missing entries to fix!')
             )
             return
         
-        # Define progress callback for verbose output
-        def progress_callback(batch_start, batch_end, total):
-            self.stdout.write(f'Processing batch {batch_start + 1}-{batch_end} of {total}')
-        
-        # Use the service to process only missing messages
-        processed_count, error_count = EmailIndexingService.bulk_index_messages(
-            missing_messages,
-            batch_size=batch_size,
-            progress_callback=progress_callback if verbose else None
-        )
-        
-        # Update message counts for all email addresses to fix inconsistencies
-        if verbose:
-            self.stdout.write('Updating message counts...')
-        EmailIndexingService.update_all_message_counts()
-        
         # Display results
         self.stdout.write(
             self.style.SUCCESS(
                 f'\nMissing entries fixed!\n'
-                f'Processed: {processed_count} messages\n'
-                f'Errors: {error_count} messages'
+                f'Processed: {results["processed_count"]} messages\n'
+                f'Errors: {results["error_count"]} messages'
             )
         )
 
@@ -253,28 +188,17 @@ class Command(BaseCommand):
         """Remove orphaned email addresses that have no associated messages"""
         self.stdout.write('Cleaning up orphaned email addresses...')
         
-        # Find orphaned index entries (email addresses with no messages)
-        orphaned_emails = IndexedEmailAddress.objects.annotate(
-            message_count_actual=Count('messages')
-        ).filter(message_count_actual=0)
+        # Use the service to perform maintenance cleanup
+        results = EmailIndexingService.maintenance_cleanup()
         
-        orphaned_count = orphaned_emails.count()
+        orphaned_count = results['orphaned_emails_removed']
         self.stdout.write(f'Found {orphaned_count} orphaned email addresses')
-        
-        if orphaned_count > 0 and verbose:
-            self.stdout.write('\nSample orphaned email addresses:')
-            for email in orphaned_emails[:10]:
-                self.stdout.write(f'  - {email.email}')
-            if orphaned_count > 10:
-                self.stdout.write(f'  ... and {orphaned_count - 10} more')
-        
-        # Remove orphaned email addresses
-        orphaned_emails.delete()
         
         self.stdout.write(
             self.style.SUCCESS(
                 f'\nOrphaned email addresses cleaned up!\n'
-                f'Removed: {orphaned_count} orphaned email addresses'
+                f'Removed: {orphaned_count} orphaned email addresses\n'
+                f'Message counts updated: {results["message_counts_updated"]}'
             )
         )
 
