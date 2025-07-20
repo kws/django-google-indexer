@@ -274,6 +274,9 @@ class MessageSyncService:
         
         # Get additional metadata with minimal format for efficiency
         message_meta = self.gmail_service.get_message(message_id, format="minimal")
+
+        # Parse mbox message
+        mbox_message = Message(raw)
         
         # Create or update the message
         with transaction.atomic():
@@ -286,6 +289,7 @@ class MessageSyncService:
                     "snippet": message_meta.get("snippet", ""),
                     "label_ids": message_meta.get("labelIds", []),
                     "raw": raw,
+                    "original_message_id": mbox_message.get("Message-ID"),
                     "internal_date": message_meta.get("internalDate"),
                     "size_estimate": message_meta.get("sizeEstimate"),
                 }
@@ -298,6 +302,7 @@ class MessageSyncService:
                 message.snippet = message_meta.get("snippet", "")
                 message.label_ids = message_meta.get("labelIds", [])
                 message.raw = raw
+                message.original_message_id = mbox_message.get("Message-ID")
                 message.internal_date = message_meta.get("internalDate")
                 message.size_estimate = message_meta.get("sizeEstimate")
                 message.save()

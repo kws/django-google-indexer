@@ -118,6 +118,7 @@ class GoogleMailMessage(models.Model):
     thread_id = models.CharField(max_length=255)
     snippet = models.TextField()
     label_ids = models.JSONField()
+    original_message_id = models.CharField(max_length=255, null=True, blank=True)
     raw = models.BinaryField()
     internal_date = models.PositiveBigIntegerField()
     
@@ -147,6 +148,7 @@ class GoogleMailMessage(models.Model):
             models.Index(fields=['internal_date']),
             models.Index(fields=['is_read']),
             models.Index(fields=['account_email', 'internal_date']),
+            models.Index(fields=['original_message_id']),
         ]
         constraints = [
             models.UniqueConstraint(fields=['message_id', 'account_email'], name='unique_message_per_account')
