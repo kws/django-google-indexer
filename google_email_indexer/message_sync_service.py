@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from mailbox import Message
 
 from .models import GoogleMailMessage, SyncState
 from .service import GoogleEmailService
